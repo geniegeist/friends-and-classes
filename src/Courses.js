@@ -1,7 +1,7 @@
 import React, { Component } from 'react';
 import { firestore } from './Firebase.js';
 import ContentEditable from 'react-contenteditable';
-import { random_id, stringToColour, hexToRgbA, stripHtml } from './util.js';
+import { random_id, stringToColour, hexToRgbA, stripHtml, compareStrings } from './util.js';
 import closeIcon from './close.png';
 import './Courses.css';
 
@@ -23,17 +23,24 @@ class Courses extends Component {
     }
 
     getClasses() {
-        return this.db.collection("classes").orderBy("title", "asc").get().then(querySnapshot => {
-            const classes = []
+        return this.db.collection("classes").onSnapshot(querySnapshot => {
+            let classes = []
             querySnapshot.forEach(doc => {
                 const id = doc.id;
                 const { title } = doc.data();
                 classes.push({
                     id, title
                 });
-                this.db.collection("classes").doc(id).collection("participants").get().then(snap => {
+            });
+            classes.sort((a, b) => compareStrings(a,b,"title"));
+            this.setState({ classes });
+
+            const allClassIds = classes.map(el => el.id);
+            allClassIds.forEach(classId => {
+                const doc = this.db.collection("classes").doc(classId);
+                doc.collection("participants").onSnapshot(querySnapshot => {
                     let participants = [];
-                    snap.forEach(doc => {
+                    querySnapshot.forEach(doc => {
                         const id = doc.id;
                         const user = doc.data();
                         participants.push({
@@ -42,10 +49,9 @@ class Courses extends Component {
                             id
                         });
                     });
-                    this.setState({ [id] : participants })
+                    this.setState({ [classId]: participants })
                 });
             });
-            this.setState({ classes });
         });
     }
 
@@ -63,7 +69,7 @@ class Courses extends Component {
         const participants = this.state[classId];
         const userIdx = participants.findIndex(user => user.id === userId);
         const participant = participants[userIdx];
-        if (stripHtml(participant.name).length == 0) {
+        if (stripHtml(participant.name).length === 0) {
             console.log("Delete");
             participants.splice(userIdx, 1);
             this.setState({ [classId]: participants }, () => {
@@ -82,9 +88,6 @@ class Courses extends Component {
     }
 
     handleOnParticipate(event, classId, confidence) {
-        const { classes } = this.state;
-        const classIdx = classes.findIndex(element => element.id == classId);
-        const classData = classes[classIdx];
         const userId = random_id();
         const newUser = {
             id: userId,
@@ -116,17 +119,17 @@ class Courses extends Component {
     handleClassDelete(event, classId) {
         if (window.confirm("Bist du sicher, dass du diesen Kurs löschen willst?")) {
             let { classes } = this.state;
-            const classIdx = classes.findIndex(element => element.id == classId);
+            const classIdx = classes.findIndex(element => element.id === classId);
             classes.splice(classIdx, 1);
             this.setState({ classes }, () => {
                 this.db.collection("classes").doc(classId).delete();
             })
-        }        
+        }
     }
 
     handleOnClassTitleChange(event, classId) {
         const { classes } = this.state;
-        const classIdx = classes.findIndex(element => element.id == classId);
+        const classIdx = classes.findIndex(element => element.id === classId);
         const classData = classes[classIdx];
         classData.title = event.target.value;
 
@@ -141,35 +144,25 @@ class Courses extends Component {
 
     handleOnBlurClassTitle(event, classId) {
         const { classes } = this.state;
-        const classIdx = classes.findIndex(element => element.id == classId);
-        const classData = classes[classIdx];
+        const classIdx = classes.findIndex(element => element.id === classId);
+        let classData = classes[classIdx];
+        classData.title = stripHtml(classData.title).trim();
         this.db.collection("classes").doc(classId).update(classData);
     }
 
     componentDidMount() {
-        this.getClasses();
+        this.unsubscribeFromClassesNotifications = this.getClasses();
+    }
 
-        // migration
-        /*
-        this.db.collection("classes").get().then(querySnapshot => {
-            querySnapshot.forEach(document => {
-                const data = document.data();
-                const participants = data.participants;
-                participants.forEach(user => {
-                    this.db.collection("classes").doc(document.id).collection("participants").doc(user.id).set({
-                        name: user.name, confidence: user.confidence
-                    });
-                });
-            });
-        });
-        */
+    componentWillUnmount() {
+        this.unsubscribeFromClassesNotifications();
     }
 
     render() {
         const { classes } = this.state;
         const classEl = classes.map(classData => {
             const participants = this.state[classData.id];
-            if (!participants) {return}
+            if (!participants) { return <p key={classData.id}></p> }
             const participantsEl = participants.map((user) => {
                 let html = `${user.name}`;
                 const color = hexToRgbA(stringToColour(user.name), 0.3)
@@ -201,18 +194,18 @@ class Courses extends Component {
 
             return (
                 <li key={classData.id} style={{ borderBottom: "1px solid #ccc", paddingBottom: "16px" }}>
-                    <div style={{display: "flex", alignItems: "center"}}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
                         <ContentEditable
-                            html={classData.title}
+                            html={stripHtml(classData.title).trim()}
                             className="classes-title"
                             onChange={(evt) => this.handleOnClassTitleChange(evt, classData.id)}
                             onBlur={(evt) => this.handleOnBlurClassTitle(evt, classData.id)}
                             onFocus={(evt) => this.handleOnFocusClassTitle(evt, classData.id)}
                             onKeyDown={(evt) => this.handleOnKeyDown(evt)}
                             tag="span"
-                            style={{display: "inline-block"}}
+                            style={{ display: "inline-block" }}
                         />
-                        <img src={closeIcon} width="25px" height="25px" onClick={evt => this.handleClassDelete(evt, classData.id)}  />
+                        <img src={closeIcon} alt="Lösche Kurs" width="25px" height="25px" onClick={evt => this.handleClassDelete(evt, classData.id)} />
                     </div>
                     <ul className="participants-list">
                         {participantsEl}
@@ -228,7 +221,9 @@ class Courses extends Component {
                     {classEl}
                 </ul>
                 <div>
-                    <button onClick={this.handleOnNewClass}>Neuer Kurs</button>
+                    <span onClick={this.handleOnNewClass} style={{
+                        color: "#0091FF", fontWeight: "Bold", cursor: "pointer"
+                    }}>+ Neuen Kurs anlegen</span>
                 </div>
             </>
         );
